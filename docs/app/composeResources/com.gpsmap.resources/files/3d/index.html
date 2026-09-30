@@ -80,15 +80,23 @@
 <script>
 const origin = location.origin;
 const isAndroid = /Android/i.test(navigator.userAgent);
+// Version web: la pagina va dentro de la app (iframe) y le pide a ella la configuracion y los mapas
+const bridge = (window.parent !== window && window.parent.gpsmap3d) || null;
+if (bridge) maplibregl.addProtocol('gpsmap', async (params) => {
+  const data = await bridge.serve(params.url.substring('gpsmap://'.length));
+  if (!data) throw new Error('No encontrado (404): ' + params.url);
+  return { data };
+});
+const base = bridge ? 'gpsmap://' : origin + '/';
 let map, cfg, route = null, cum = [], total = 0;
 let playing = false, speed = 1, t = 0, lastTs = 0, bearing = null, camPitch = null;
 
 const fmtKm = m => m < 1000 ? Math.round(m) + ' m' : (m / 1000).toFixed(1).replace('.', ',') + ' km';
 
 function prepareStyle(text) {
-  const s = JSON.parse(text.split('gpsmap://').join(origin + '/'));
+  const s = JSON.parse(bridge ? text : text.split('gpsmap://').join(origin + '/'));
   // fuente propia para el relieve 3D (separada del sombreado, como recomienda MapLibre)
-  s.sources['terrain-dem'] = { type: 'raster-dem', tiles: [origin + '/tiles/dem/{z}/{x}/{y}'],
+  s.sources['terrain-dem'] = { type: 'raster-dem', tiles: [base + 'tiles/dem/{z}/{x}/{y}'],
     tileSize: 512, maxzoom: 11, encoding: 'terrarium' };
   s.terrain = { source: 'terrain-dem', exaggeration: 1.35 };
   // En los moviles Android el cielo de MapLibre puede tapar toda la pantalla (fallo conocido):
@@ -367,7 +375,8 @@ document.getElementById('prog').oninput = e => {
 document.getElementById('sat').onclick = () => useStyle('sat');
 document.getElementById('topo').onclick = () => useStyle('topo');
 function closeViewer() {
-  if (window.GPSMap && window.GPSMap.close) window.GPSMap.close();
+  if (bridge) bridge.close();
+  else if (window.GPSMap && window.GPSMap.close) window.GPSMap.close();
   else if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.gpsmap) window.webkit.messageHandlers.gpsmap.postMessage('close');
   else window.close();
 }
@@ -387,7 +396,7 @@ function notice(msg) {
   n.textContent = msg;
 }
 window.addEventListener('error', e => { console.error('JS: ' + e.message); notice('Error en la vista 3D: ' + e.message); });
-fetch('config.json').then(r => r.json()).then(c => {
+(bridge ? bridge.config().then(t => JSON.parse(t)) : fetch('config.json').then(r => r.json())).then(c => {
   init(c);
   // (las teselas que faltan fuera de la zona de cada ortofoto son normales: no se registran)
   map.on('error', e => { const m = e.error && e.error.message || String(e); if (!/\((400|404)\)/.test(m)) console.error('Mapa: ' + m); });
@@ -396,7 +405,7 @@ fetch('config.json').then(r => r.json()).then(c => {
   setTimeout(() => console.info('estado3d: 10s cargado=' + map.loaded() + ' tiles=' + map.areTilesLoaded() + ' zoom=' + map.getZoom().toFixed(1)), 10000);
   // si a los 20 s no hay relieve cargado, se avisa
   let everIdle = false; map.once('idle', () => { everIdle = true; });
-  setTimeout(() => { if (!everIdle && !playing) notice('Cargando el relieve… si no aparece, comprueba la conexión o descarga la zona en "Offline".'); }, 20000);
+  setTimeout(() => { if (!everIdle && !playing) notice(bridge ? 'Cargando el relieve… si no aparece, comprueba la conexión.' : 'Cargando el relieve… si no aparece, comprueba la conexión o descarga la zona en "Offline".'); }, 20000);
 }).catch(e => notice('No se pudo abrir la vista 3D: ' + e));
 </script>
 </body>
