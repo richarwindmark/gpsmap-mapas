@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>GPSMap</title>
+  <meta name="description" content="Mapas de montaña, rutas y el tiempo">
+  <meta name="theme-color" content="#1B5E20">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon-192.png">
+  <!-- iPhone: "Añadir a pantalla de inicio" abre a pantalla completa, como una app -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="GPSMap">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <style>
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #1B1F1C; }
+    #cargando { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      color: #E8F5E9; font: 16px system-ui, sans-serif; gap: 16px; }
+    #cargando img { width: 96px; height: 96px; border-radius: 22px; }
+  </style>
+</head>
+<body>
+  <div id="cargando"><img src="icon-192.png" alt=""><div>Cargando GPSMap…</div></div>
+  <script src="gpsmap.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function () {});
+  </script>
+</body>
+</html>
