@@ -50,6 +50,18 @@
     box-shadow: 0 0 0 7px rgba(255,90,31,.28), 0 2px 6px rgba(0,0,0,.35); }
   /* los creditos van por encima de la barra de reproduccion */
   body.has-route .maplibregl-ctrl-bottom-right { bottom: 112px; }
+  /* video de la ruta */
+  #render { left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(88vw, 420px); padding: 18px 20px 16px; display: none; z-index: 7; }
+  #render > b { display: block; font-size: 19px; margin-bottom: 8px; color: var(--pine); }
+  #render #rtext { font-size: 14px; color: #3c4740; margin-bottom: 12px; line-height: 1.35; }
+  #render #rstatus { font-size: 14px; margin: 8px 0 12px; min-height: 18px; }
+  #rprog { height: 10px; background: #e6e9e7; border-radius: 5px; overflow: hidden; }
+  #rbar { height: 100%; width: 0; background: var(--route); transition: width .3s; }
+  .rbtns { display: flex; gap: 8px; }
+  /* mientras se crea el video: solo el panel de progreso (lo demas no sale en el video, pero estorba) */
+  body.rendering #top, body.rendering #bar, body.rendering #title, body.rendering #summary,
+  body.rendering .maplibregl-ctrl-top-right, body.rendering .maplibregl-ctrl-bottom-right { display: none !important; }
+  body.rendering #render { top: auto; bottom: 20px; transform: translate(-50%, 0); }
 </style>
 </head>
 <body>
@@ -58,6 +70,7 @@
   <button class="btn" id="close">✕ Salir</button>
   <button class="btn on" id="sat">Satélite</button>
   <button class="btn" id="topo">Topográfico</button>
+  <button class="btn" id="video" style="display:none">🎬 Vídeo</button>
 </div>
 <div class="panel" id="title"><b id="tname"></b><span id="tstats"></span></div>
 <div class="panel" id="summary">
@@ -114,6 +127,9 @@ const TRAIL = '#FFE066', TRAIL_EDGE = 'rgba(30,30,20,0.55)';
 // Ruta completa (vista general) y rastro que va dejando el punto al reproducir (misma linea, se muestra
 // solo hasta donde ha llegado con un degradado sobre el progreso: no se recalcula la geometria en cada imagen)
 function addRoute() {
+  // mas detalle a media distancia (donde va la ruta) y menos solo en el horizonte: menos saltos de nivel de
+  // detalle en pantalla y mas teselas nitidas con la camara inclinada (por defecto el mapa baja de detalle antes)
+  try { map.setSourceTileLodParams(2.5, 8); } catch (e) { console.warn('lod: ' + e); }
   if (!route || map.getSource('route')) return;
   map.addSource('route', { type: 'geojson', lineMetrics: true, data: { type: 'Feature', geometry: { type: 'LineString', coordinates: route.map(p => [p[0], p[1]]) } } });
   map.addLayer({ id: 'route-casing', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round' },
@@ -225,6 +241,20 @@ function groundAt(lon, lat, fallback) {
   return h != null ? h : (fallback != null ? fallback * EXAG : 0);
 }
 
+// Altura minima de la camara (en [cam]) para ver el punto [tgt] por encima del relieve que hay en medio
+function clearSight(cam, tgt) {
+  let need = 0;
+  for (let i = 1; i < 12; i++) {
+    const s = i / 12;  // 0 = camara, 1 = punto
+    const lon = cam[0] + (tgt[0] - cam[0]) * s, lat = cam[1] + (tgt[1] - cam[1]) * s;
+    const h = groundAt(lon, lat, null);
+    if (!h) continue;
+    // la linea de vision a esa altura debe pasar 60 m por encima del terreno
+    need = Math.max(need, (h + 60 - tgt[2] * s) / (1 - s));
+  }
+  return need;
+}
+
 function placeCamera(dt) {
   const d = t / duration() * total;
   const p = at(d);
@@ -241,8 +271,10 @@ function placeCamera(dt) {
     bearing += (b - bearing) * (1 - Math.exp(-dt / 1400));
   }
   const back = dest([camT[0], camT[1]], (bearing + 180) % 360, follow * Math.cos(ELEV));
-  // nunca por debajo de las montañas que haya donde esta la camara (con margen)
-  const want = Math.max(camT[2] + follow * Math.sin(ELEV), groundAt(back[0], back[1], null) + 180);
+  // nunca por debajo de las montañas que haya donde esta la camara (con margen)...
+  let want = Math.max(camT[2] + follow * Math.sin(ELEV), groundAt(back[0], back[1], null) + 180);
+  // ...y que ninguna montaña entre la camara y el punto lo tape: se sube lo justo para verlo (con margen)
+  want = Math.max(want, clearSight(back, camT));
   camAlt = camAlt == null || !dt ? want : camAlt + (want - camAlt) * (1 - Math.exp(-dt / (want > camAlt ? 500 : 1500)));
   const opts = map.calculateCameraOptionsFromTo(new maplibregl.LngLat(back[0], back[1]), camAlt, new maplibregl.LngLat(camT[0], camT[1]), camT[2]);
   map.jumpTo(opts);
@@ -281,7 +313,7 @@ function setPlaying(on) {
       showProgress(t / duration() * total / total);
       const d = t / duration() * total, p = at(d), b = camBearingAt(d), pAlt = groundAt(p[0], p[1], p[2]);
       const back = dest([p[0], p[1]], (b + 180) % 360, follow * Math.cos(ELEV));
-      const alt = Math.max(pAlt + follow * Math.sin(ELEV), groundAt(back[0], back[1], null) + 180);
+      const alt = Math.max(pAlt + follow * Math.sin(ELEV), groundAt(back[0], back[1], null) + 180, clearSight(back, [p[0], p[1], pAlt]));
       const opts = map.calculateCameraOptionsFromTo(new maplibregl.LngLat(back[0], back[1]), alt, new maplibregl.LngLat(p[0], p[1]), pAlt);
       map.easeTo(Object.assign({}, opts, { duration: 2000, easing: x => x * x * (3 - 2 * x) }));
       map.once('moveend', () => { camT = [p[0], p[1], pAlt]; bearing = b; camAlt = alt; if (playing) requestAnimationFrame(frame); });
@@ -349,6 +381,10 @@ function init(c) {
       document.getElementById('tname').textContent = c.name || 'Ruta';
       document.getElementById('tstats').textContent = fmtKm(total) + (c.gain != null ? ' · ↑ ' + Math.round(c.gain) + ' m' : '');
       update(0, false);
+      // video de la ruta: boton siempre; y el panel abierto si se pidio "Crear video de la ruta"
+      document.getElementById('video').style.display = '';
+      document.getElementById('video').onclick = () => openRenderPanel();
+      if (c.render) map.once('moveend', () => openRenderPanel());
       // "Reproducir en 3D": al terminar el encuadre y cargar el relieve, arranca desde el inicio
       if (c.autoplay) map.once('moveend', () => map.once('idle', () => {
         t = 0; camT = null; setPlaying(true);
@@ -453,5 +489,7 @@ window.addEventListener('error', e => { console.error('JS: ' + e.message); notic
   setTimeout(() => { if (!everIdle && !playing) notice(bridge ? 'Cargando el relieve… si no aparece, comprueba la conexión.' : 'Cargando el relieve… si no aparece, comprueba la conexión o descarga la zona en "Offline".'); }, 20000);
 }).catch(e => notice('No se pudo abrir la vista 3D: ' + e));
 </script>
+<script src="mp4-muxer.min.js"></script>
+<script src="render.js"></script>
 </body>
 </html>
