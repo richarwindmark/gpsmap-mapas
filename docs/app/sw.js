@@ -1,6 +1,6 @@
-// GPSMap web: guarda los archivos de la app para que abra rapido (y sin conexion, lo que ya se haya cargado).
-// Los mapas no se guardan aqui: los gestiona la propia app.
-const CACHE = 'gpsmap-app-v1';
+// GPSMap web: guarda los archivos de la app para que abra sin conexion (lo que ya se haya cargado).
+// Siempre se pide primero la version nueva al servidor (sin la cache del navegador); los mapas no van aqui.
+const CACHE = 'gpsmap-app-v2';
 
 self.addEventListener('install', (e) => { self.skipWaiting(); });
 self.addEventListener('activate', (e) => {
@@ -10,9 +10,9 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== self.location.origin || e.request.headers.has('range')) return;
-  // red primero (siempre la version nueva), y si no hay conexion, lo guardado
-  e.respondWith(fetch(e.request).then((r) => {
+  // red primero y sin cache del navegador (siempre la ultima version publicada); sin conexion, lo guardado
+  e.respondWith(fetch(e.request, { cache: 'no-store' }).then((r) => {
     if (r.ok) { const c = r.clone(); caches.open(CACHE).then((cache) => cache.put(e.request, c)); }
     return r;
-  }).catch(() => caches.match(e.request)));
+  }).catch(() => caches.match(e.request, { ignoreSearch: true })));
 });

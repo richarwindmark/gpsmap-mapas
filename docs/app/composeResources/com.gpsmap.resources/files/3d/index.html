@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="maplibre-gl.css">
 <script src="maplibre-gl.js"></script>
 <style>
-  :root { --pine: #1F6F4A; --route: #FF5A1F; --ink: #14201A; }
+  :root { --pine: #1F6F4A; --route: #F2C230; --ink: #14201A; }
   html, body { margin: 0; height: 100%; width: 100%; overflow: hidden; background: #cfe3f0;
     font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
   /* el mapa ocupa siempre toda la ventana, pase lo que pase con el tamaño inicial del visor */
@@ -20,9 +20,10 @@
     font-weight: 600; box-shadow: 0 2px 10px rgba(0,0,0,.18); cursor: pointer; }
   .btn.on { background: var(--pine); color: #fff; }
   #bar { left: 12px; right: 12px; bottom: 34px; padding: 12px 16px; display: none; align-items: center; gap: 14px; }
-  #play { width: 52px; height: 52px; border-radius: 26px; border: 0; background: var(--route); color: #fff;
-    font-size: 22px; cursor: pointer; flex: none; box-shadow: 0 3px 10px rgba(255,90,31,.45); }
+  #play { width: 52px; height: 52px; border-radius: 26px; border: 0; background: var(--route); color: #2b2410;
+    font-size: 22px; cursor: pointer; flex: none; box-shadow: 0 3px 10px rgba(180,140,20,.45); }
   #speed { flex: none; }
+  .zoomf { flex: none; width: 40px; padding: 8px 0; font-size: 20px; line-height: 1; }
   #prog { flex: 1; accent-color: var(--route); height: 28px; }
   #info { flex: none; min-width: 120px; text-align: right; font-variant-numeric: tabular-nums; }
   #info b { font-size: 17px; }
@@ -74,6 +75,8 @@
 <div class="panel" id="bar">
   <button id="play" title="Reproducir recorrido">▶</button>
   <button class="btn" id="speed">x1</button>
+  <button class="btn zoomf" id="zout" title="Alejar la cámara">−</button>
+  <button class="btn zoomf" id="zin" title="Acercar la cámara">+</button>
   <input id="prog" type="range" min="0" max="1000" value="0">
   <div id="info"><b id="idist">0 km</b><span id="iele"></span></div>
 </div>
@@ -89,7 +92,7 @@ if (bridge) maplibregl.addProtocol('gpsmap', async (params) => {
 });
 const base = bridge ? 'gpsmap://' : origin + '/';
 let map, cfg, route = null, cum = [], total = 0;
-let playing = false, speed = 1, t = 0, lastTs = 0, bearing = null, camPitch = null;
+let playing = false, speed = 1, t = 0, lastTs = 0, bearing = null;
 
 const fmtKm = m => m < 1000 ? Math.round(m) + ' m' : (m / 1000).toFixed(1).replace('.', ',') + ' km';
 
@@ -106,13 +109,38 @@ function prepareStyle(text) {
   return s;
 }
 
+// Colores del recorrido: amarillo claro con borde oscuro (se lee sobre satelite y topografico)
+const TRAIL = '#FFE066', TRAIL_EDGE = 'rgba(30,30,20,0.55)';
+// Ruta completa (vista general) y rastro que va dejando el punto al reproducir (misma linea, se muestra
+// solo hasta donde ha llegado con un degradado sobre el progreso: no se recalcula la geometria en cada imagen)
 function addRoute() {
   if (!route || map.getSource('route')) return;
-  map.addSource('route', { type: 'geojson', data: { type: 'Feature', geometry: { type: 'LineString', coordinates: route.map(p => [p[0], p[1]]) } } });
+  map.addSource('route', { type: 'geojson', lineMetrics: true, data: { type: 'Feature', geometry: { type: 'LineString', coordinates: route.map(p => [p[0], p[1]]) } } });
   map.addLayer({ id: 'route-casing', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round' },
-    paint: { 'line-color': '#fff', 'line-width': 9, 'line-opacity': .9 } });
+    paint: { 'line-color': TRAIL_EDGE, 'line-width': 6.5 } });
   map.addLayer({ id: 'route-line', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round' },
-    paint: { 'line-color': '#FF5A1F', 'line-width': 5 } });
+    paint: { 'line-color': TRAIL, 'line-width': 3.5 } });
+  map.addSource('runner', { type: 'geojson', data: runnerData(route[0]) });
+  // el punto: pequeño, amarillo, con halo suave (dibujado por el mapa: se mueve sin temblar)
+  map.addLayer({ id: 'runner-halo', type: 'circle', source: 'runner', paint: { 'circle-radius': 13, 'circle-color': TRAIL, 'circle-opacity': 0.28, 'circle-blur': 0.6, 'circle-pitch-alignment': 'map' } });
+  map.addLayer({ id: 'runner-dot', type: 'circle', source: 'runner', paint: { 'circle-radius': 5.5, 'circle-color': TRAIL, 'circle-stroke-color': '#2b2b1f', 'circle-stroke-width': 1.5, 'circle-pitch-alignment': 'map' } });
+  showProgress(trailProgress);
+}
+function runnerData(p) { return { type: 'Feature', geometry: { type: 'Point', coordinates: [p[0], p[1]] } }; }
+// progreso del rastro (0..1); null = ruta completa visible (antes de reproducir)
+let trailProgress = null;
+function showProgress(f) {
+  trailProgress = f;
+  if (!map || !map.getLayer('route-line')) return;
+  if (f == null) {
+    map.setPaintProperty('route-line', 'line-gradient', null); map.setPaintProperty('route-line', 'line-color', TRAIL);
+    map.setPaintProperty('route-casing', 'line-gradient', null); map.setPaintProperty('route-casing', 'line-color', TRAIL_EDGE);
+    return;
+  }
+  const v = Math.max(0.00001, Math.min(1, f));
+  if (v >= 1) { showProgress(null); return; }
+  map.setPaintProperty('route-line', 'line-gradient', ['step', ['line-progress'], TRAIL, v, 'rgba(0,0,0,0)']);
+  map.setPaintProperty('route-casing', 'line-gradient', ['step', ['line-progress'], TRAIL_EDGE, v, 'rgba(0,0,0,0)']);
 }
 
 function hav(a, b) {
@@ -181,59 +209,63 @@ function camBearingAt(d) {
   return camBrg[i] + (camBrg[j] - camBrg[i]) * (f - i);
 }
 
-// Inclinacion que deja ver el punto por encima de las montañas de detras (se calcula pocas veces por segundo)
-function safePitch(p, b) {
-  const ground = map.queryTerrainElevation([p[0], p[1]]);
-  if (ground == null) return 55;
-  for (const pitch of [60, 55, 50, 45, 40, 35, 30, 25]) {
-    const rise = Math.tan((90 - pitch) * Math.PI / 180);
-    let ok = true;
-    for (let x = 100; x <= 2000 && ok; x += 100) {
-      const back = dest(p, (b + 180) % 360, x);
-      for (const side of [-100, 0, 100]) {
-        const q = side ? dest(back, (b + 90) % 360, side) : back;
-        const h = map.queryTerrainElevation([q[0], q[1]]);
-        if (h != null && h > ground + x * rise - 40) { ok = false; break; }
-      }
-    }
-    if (ok) return pitch;
-  }
-  return 20;
+// ---- Camara de seguimiento (como un dron detras del punto) ----
+// Se coloca a FOLLOW metros del punto, detras y por encima (unos 32 grados), mirandolo. Todo va suavizado
+// en el tiempo (punto, rumbo, altura), asi no copia cada zigzag del camino ni los saltos del relieve.
+// Con − y + se aleja o se acerca.
+let follow = 3600;                 // distancia de la camara al punto (m)
+const ELEV = 32 * Math.PI / 180;   // angulo desde el que se mira
+const EXAG = 1.35;                 // exageracion del relieve (la misma que en prepareStyle)
+let camT = null;                   // punto al que mira la camara (suavizado): [lon, lat, alt]
+let camAlt = null;                 // altura de la camara (suavizada)
+
+// altura del relieve dibujado en un punto (con exageracion); si aun no ha cargado, la de la ruta
+function groundAt(lon, lat, fallback) {
+  const h = map.queryTerrainElevation ? map.queryTerrainElevation([lon, lat]) : null;
+  return h != null ? h : (fallback != null ? fallback * EXAG : 0);
 }
 
-let runner = null, wantPitch = 55, lastPitchCheck = 0;
+function placeCamera(dt) {
+  const d = t / duration() * total;
+  const p = at(d);
+  const pAlt = groundAt(p[0], p[1], p[2]);
+  const targetBrg = camBearingAt(d);
+  if (camT == null || !dt) {
+    camT = [p[0], p[1], pAlt]; bearing = targetBrg; camAlt = null;
+  } else {
+    // el punto que se mira va un poco por detras del real: movimiento de camara suave
+    const kp = 1 - Math.exp(-dt / 450);
+    camT[0] += (p[0] - camT[0]) * kp; camT[1] += (p[1] - camT[1]) * kp; camT[2] += (pAlt - camT[2]) * (1 - Math.exp(-dt / 900));
+    // giro lento y continuo
+    let b = targetBrg; while (b - bearing > 180) b -= 360; while (b - bearing < -180) b += 360;
+    bearing += (b - bearing) * (1 - Math.exp(-dt / 1400));
+  }
+  const back = dest([camT[0], camT[1]], (bearing + 180) % 360, follow * Math.cos(ELEV));
+  // nunca por debajo de las montañas que haya donde esta la camara (con margen)
+  const want = Math.max(camT[2] + follow * Math.sin(ELEV), groundAt(back[0], back[1], null) + 180);
+  camAlt = camAlt == null || !dt ? want : camAlt + (want - camAlt) * (1 - Math.exp(-dt / (want > camAlt ? 500 : 1500)));
+  const opts = map.calculateCameraOptionsFromTo(new maplibregl.LngLat(back[0], back[1]), camAlt, new maplibregl.LngLat(camT[0], camT[1]), camT[2]);
+  map.jumpTo(opts);
+}
+
 function update(d, moveCamera, dt) {
   const p = at(d);
-  if (runner) runner.setLngLat([p[0], p[1]]);
+  const src = map && map.getSource('runner');
+  if (src) src.setData(runnerData(p));
+  if (trailProgress != null || playing) showProgress(d / total);
   document.getElementById('idist').textContent = fmtKm(d) + ' / ' + fmtKm(total);
   document.getElementById('iele').textContent = p[2] != null ? Math.round(p[2]) + ' m de altitud' : '';
   document.getElementById('prog').value = Math.round(d / total * 1000);
-  if (!moveCamera) return;
-  const target = camBearingAt(d);
-  const now = performance.now();
-  if (bearing == null || !dt) {
-    // salto directo (inicio o al mover la barra)
-    bearing = target; wantPitch = safePitch(p, target); camPitch = wantPitch; lastPitchCheck = now;
-  } else {
-    // suavizado en el tiempo: igual de fluido a 30 que a 120 imagenes por segundo
-    const a = 1 - Math.exp(-dt / 700);
-    bearing += (target - bearing) * a;
-    if (now - lastPitchCheck > 400) { wantPitch = safePitch(p, bearing); lastPitchCheck = now; }
-    // baja rapido si una montaña va a tapar el punto; vuelve a inclinarse despacio
-    const tau = wantPitch < camPitch ? 500 : 2500;
-    camPitch += (wantPitch - camPitch) * (1 - Math.exp(-dt / tau));
-  }
-  map.jumpTo({ center: [p[0], p[1]], bearing: ((bearing % 360) + 360) % 360, pitch: camPitch, zoom: 14.3 });
+  if (moveCamera) placeCamera(dt);
 }
 
 function frame(ts) {
   if (!playing) return;
   // pausas largas (pestaña oculta, carga) no provocan saltos
-  const dt = lastTs ? Math.min(100, ts - lastTs) : 16;
+  const dt = lastTs ? Math.min(60, ts - lastTs) : 16;
   lastTs = ts;
   t = Math.min(duration(), t + dt);
-  const d = t / duration() * total;
-  update(d, true, dt);
+  update(t / duration() * total, true, dt);
   if (t >= duration()) { setPlaying(false); showSummary(); return; }
   requestAnimationFrame(frame);
 }
@@ -242,17 +274,27 @@ function setPlaying(on) {
   playing = on;
   document.getElementById('play').textContent = on ? '❚❚' : '▶';
   if (on) {
-    if (t >= duration()) { t = 0; bearing = null; }
+    if (t >= duration()) { t = 0; camT = null; }
     lastTs = 0;
-    if (bearing == null) {
-      // primera vez: vuelo suave hasta detras del punto, sin saltos
-      const d = t / duration() * total, p = at(d), b = camBearingAt(d), pt = safePitch(p, b);
-      map.easeTo({ center: [p[0], p[1]], bearing: ((b % 360) + 360) % 360, pitch: pt, zoom: 14.3, duration: 1800 });
-      map.once('moveend', () => { bearing = b; camPitch = pt; wantPitch = pt; if (playing) requestAnimationFrame(frame); });
+    if (camT == null) {
+      // primera vez: el rastro empieza vacio y la camara vuela suave hasta detras del punto
+      showProgress(t / duration() * total / total);
+      const d = t / duration() * total, p = at(d), b = camBearingAt(d), pAlt = groundAt(p[0], p[1], p[2]);
+      const back = dest([p[0], p[1]], (b + 180) % 360, follow * Math.cos(ELEV));
+      const alt = Math.max(pAlt + follow * Math.sin(ELEV), groundAt(back[0], back[1], null) + 180);
+      const opts = map.calculateCameraOptionsFromTo(new maplibregl.LngLat(back[0], back[1]), alt, new maplibregl.LngLat(p[0], p[1]), pAlt);
+      map.easeTo(Object.assign({}, opts, { duration: 2000, easing: x => x * x * (3 - 2 * x) }));
+      map.once('moveend', () => { camT = [p[0], p[1], pAlt]; bearing = b; camAlt = alt; if (playing) requestAnimationFrame(frame); });
       return;
     }
     requestAnimationFrame(frame);
   }
+}
+
+// − / + : alejar o acercar la camara del recorrido (tambien en pausa)
+function zoomFollow(f) {
+  follow = Math.max(700, Math.min(9000, follow * f));
+  if (!playing && camT != null) placeCamera(0);
 }
 
 function useStyle(which) {
@@ -278,11 +320,12 @@ function init(c) {
   });
   map.addControl(new maplibregl.NavigationControl({ visualizePitch: true, showZoom: true }), 'top-right');
   map.on('style.load', addRoute);
-  // el punto que recorre la ruta: marcador (se mueve sin recalcular capas, fluido)
-  if (route) {
-    const el = document.createElement('div'); el.className = 'runner';
-    runner = new maplibregl.Marker({ element: el }).setLngLat([route[0][0], route[0][1]]).addTo(map);
-  }
+  // reproduciendo: la rueda del raton (o el pellizco) acerca/aleja la camara de seguimiento
+  map.getCanvasContainer().addEventListener('wheel', e => {
+    if (!playing) return;
+    e.preventDefault(); e.stopPropagation();
+    zoomFollow(e.deltaY > 0 ? 1.12 : 1 / 1.12);
+  }, { passive: false, capture: true });
   // el mapa siempre se ajusta al tamaño real de la ventana (en algunos moviles el visor cambia de tamaño al abrirse)
   const fit = () => map && map.resize();
   addEventListener('resize', fit);
@@ -308,7 +351,7 @@ function init(c) {
       update(0, false);
       // "Reproducir en 3D": al terminar el encuadre y cargar el relieve, arranca desde el inicio
       if (c.autoplay) map.once('moveend', () => map.once('idle', () => {
-        t = 0; bearing = null; setPlaying(true);
+        t = 0; camT = null; setPlaying(true);
       }));
     }
     map.once('idle', checkRender);
@@ -361,17 +404,19 @@ function showSummary() {
   setTimeout(() => document.getElementById('summary').classList.add('on'), 700);
 }
 function hideSummary() { document.getElementById('summary').classList.remove('on'); }
-document.getElementById('sagain').onclick = () => { hideSummary(); t = 0; bearing = null; setPlaying(true); };
+document.getElementById('sagain').onclick = () => { hideSummary(); t = 0; camT = null; setPlaying(true); };
 document.getElementById('play').onclick = () => { hideSummary(); setPlaying(!playing); };
 document.getElementById('speed').onclick = e => {
   const d = t / duration(); speed = speed === 1 ? 2 : speed === 2 ? 4 : 1;
   t = d * duration(); e.target.textContent = 'x' + speed;
 };
 document.getElementById('prog').oninput = e => {
-  const d = e.target.value / 1000 * total; t = d / total * duration(); bearing = null; update(d, true);
+  const d = e.target.value / 1000 * total; t = d / total * duration(); camT = null; update(d, true);
   // cuando termine de cargar el relieve de esa zona, se recoloca la camara por encima de las montañas
-  map.once('idle', () => { if (!playing) { bearing = null; update(d, true); } });
+  map.once('idle', () => { if (!playing) { camT = null; update(d, true); } });
 };
+document.getElementById('zout').onclick = () => zoomFollow(1.35);
+document.getElementById('zin').onclick = () => zoomFollow(1 / 1.35);
 document.getElementById('sat').onclick = () => useStyle('sat');
 document.getElementById('topo').onclick = () => useStyle('topo');
 function closeViewer() {
