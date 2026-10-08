@@ -127,9 +127,6 @@ const TRAIL = '#FFE066', TRAIL_EDGE = 'rgba(30,30,20,0.55)';
 // Ruta completa (vista general) y rastro que va dejando el punto al reproducir (misma linea, se muestra
 // solo hasta donde ha llegado con un degradado sobre el progreso: no se recalcula la geometria en cada imagen)
 function addRoute() {
-  // mas detalle a media distancia (donde va la ruta) y menos solo en el horizonte: menos saltos de nivel de
-  // detalle en pantalla y mas teselas nitidas con la camara inclinada (por defecto el mapa baja de detalle antes)
-  try { map.setSourceTileLodParams(2.5, 8); } catch (e) { console.warn('lod: ' + e); }
   if (!route || map.getSource('route')) return;
   map.addSource('route', { type: 'geojson', lineMetrics: true, data: { type: 'Feature', geometry: { type: 'LineString', coordinates: route.map(p => [p[0], p[1]]) } } });
   map.addLayer({ id: 'route-casing', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round' },
@@ -255,6 +252,7 @@ function clearSight(cam, tgt) {
   return need;
 }
 
+let sightNeed = 0, sightAt = null;
 function placeCamera(dt) {
   const d = t / duration() * total;
   const p = at(d);
@@ -274,7 +272,10 @@ function placeCamera(dt) {
   // nunca por debajo de las montañas que haya donde esta la camara (con margen)...
   let want = Math.max(camT[2] + follow * Math.sin(ELEV), groundAt(back[0], back[1], null) + 180);
   // ...y que ninguna montaña entre la camara y el punto lo tape: se sube lo justo para verlo (con margen)
-  want = Math.max(want, clearSight(back, camT));
+  // (se calcula 4 veces por segundo, no en cada imagen: consulta mucho el relieve)
+  const nowMs = performance.now();
+  if (!dt || sightAt == null || nowMs - sightAt > 250) { sightNeed = clearSight(back, camT); sightAt = nowMs; }
+  want = Math.max(want, sightNeed);
   camAlt = camAlt == null || !dt ? want : camAlt + (want - camAlt) * (1 - Math.exp(-dt / (want > camAlt ? 500 : 1500)));
   const opts = map.calculateCameraOptionsFromTo(new maplibregl.LngLat(back[0], back[1]), camAlt, new maplibregl.LngLat(camT[0], camT[1]), camT[2]);
   map.jumpTo(opts);
